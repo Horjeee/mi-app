@@ -349,9 +349,12 @@
             c.setDate(c.getDate() + days);
             return c;
         }
+        function getTodayKey() {
+            return toDateKey(new Date());
+        }
 
         const todayObj = new Date();
-        const todayKey = toDateKey(todayObj);
+        const todayKey = getTodayKey();
         const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
         const calendarColors = [
@@ -390,9 +393,7 @@
                 confetti: true
             },
             streak: {
-                days: 5,
-                lastCompletedDate: null,
-                weekDays: [true, true, true, true, true, false, false]
+                completedDates: []
             },
             morning: { enabled: true, time: '08:00' },
             tasks: [
@@ -473,6 +474,11 @@
                 Object.assign(appState, parsed);
             }
         } catch (e) {}
+
+        // Normalizar estructura de racha real por fechas
+        if (!appState.streak || !Array.isArray(appState.streak.completedDates)) {
+            appState.streak = { completedDates: [] };
+        }
 
         function saveState() {
             try {
@@ -756,18 +762,46 @@
             }
         }
 
-        function registerStreakProgress() {
-            if (!appState.streak) {
-                appState.streak = { days: 1, lastCompletedDate: todayKey, weekDays: [true, false, false, false, false, false, false] };
-                return;
+        /* =========================================================
+           LÓGICA DE RACHA REAL CONFORME AL CALENDARIO
+           ========================================================= */
+        function getCurrentWeekDates() {
+            const now = new Date();
+            const dayOfWeek = (now.getDay() + 6) % 7; // 0 = Lunes, 6 = Domingo
+            const monday = addDays(now, -dayOfWeek);
+            return Array.from({ length: 7 }, (_, i) => toDateKey(addDays(monday, i)));
+        }
+
+        function computeStreakStats() {
+            if (!appState.streak || !Array.isArray(appState.streak.completedDates)) {
+                appState.streak = { completedDates: [] };
             }
-            if (appState.streak.lastCompletedDate !== todayKey) {
-                appState.streak.days += 1;
-                appState.streak.lastCompletedDate = todayKey;
-                const dayIdx = (new Date().getDay() + 6) % 7;
-                if (Array.isArray(appState.streak.weekDays)) {
-                    appState.streak.weekDays[dayIdx] = true;
-                }
+            const now = new Date();
+            const currentTodayKey = toDateKey(now);
+            const yesterdayKey = toDateKey(addDays(now, -1));
+            const set = new Set(appState.streak.completedDates);
+            let count = 0;
+
+            // Si hoy está completado cuenta desde hoy hacia atrás; si aún no, desde ayer (si ayer no se cumplió, vuelve a 0)
+            let cursor = set.has(currentTodayKey) ? now : (set.has(yesterdayKey) ? addDays(now, -1) : null);
+            while (cursor && set.has(toDateKey(cursor))) {
+                count++;
+                cursor = addDays(cursor, -1);
+            }
+
+            const weekDates = getCurrentWeekDates();
+            const weekDays = weekDates.map(d => set.has(d));
+            const todayDone = set.has(currentTodayKey);
+            return { days: count, weekDays, todayDone };
+        }
+
+        function registerStreakProgress() {
+            if (!appState.streak || !Array.isArray(appState.streak.completedDates)) {
+                appState.streak = { completedDates: [] };
+            }
+            const currentTodayKey = getTodayKey();
+            if (!appState.streak.completedDates.includes(currentTodayKey)) {
+                appState.streak.completedDates.push(currentTodayKey);
             }
         }
 
@@ -962,15 +996,17 @@
            1. SECCIÓN INICIO
            ========================================================= */
         function renderHomeSection() {
+            const currentTodayKey = getTodayKey();
             const totalTasks = appState.tasks.length;
             const doneTasks = appState.tasks.filter(t => t.done).length;
             const pct = totalTasks === 0 ? 0 : Math.round((doneTasks / totalTasks) * 100);
             const dashOffset = 150.8 - (pct / 100) * 150.8;
-            const todayEvs = appState.events.filter(e => e.date === todayKey);
+            const todayEvs = appState.events.filter(e => e.date === currentTodayKey);
             const doneRoutines = appState.routines.filter(r => r.completedThisWeek).length;
             const activeAlert = appState.alerts.find(a => a.active);
-            const streak = appState.streak || { days: 5, weekDays: [true, true, true, true, true, false, false] };
+            const streak = computeStreakStats();
             const weekLetters = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+            const todayWeekIdx = (new Date().getDay() + 6) % 7;
 
             return `
                 <div class="flex items-center justify-between mb-3.5">
@@ -979,9 +1015,9 @@
                         <h1 class="text-2xl font-extrabold tracking-tight">Hola, ${appState.settings.name} 👋</h1>
                     </div>
                     <div class="flex items-center gap-2">
-                        <div class="px-3 py-1.5 rounded-full app-card flex items-center gap-1 shadow-sm" style="border-color: rgba(249, 115, 22, 0.35)">
-                            <span class="text-sm">🔥</span>
-                            <span class="text-xs font-extrabold text-orange-500">${streak.days}d</span>
+                        <div class="px-3 py-1.5 rounded-full app-card flex items-center gap-1 shadow-sm" style="border-color: ${streak.days > 0 ? 'rgba(249, 115, 22, 0.35)' : 'var(--border-color)'}">
+                            <span class="text-sm" style="${streak.days > 0 ? '' : 'filter: grayscale(1); opacity: 0.5'}">🔥</span>
+                            <span class="text-xs font-extrabold ${streak.days > 0 ? 'text-orange-500' : ''}" style="${streak.days > 0 ? '' : 'color: var(--text-secondary)'}">${streak.days}d</span>
                         </div>
                         <button onclick="toggleDarkMode()" class="w-10 h-10 rounded-full app-card flex items-center justify-center text-base cursor-pointer shadow-sm tap-btn">
                             ${appState.settings.darkMode ? '☀️' : '🌙'}
@@ -989,23 +1025,24 @@
                     </div>
                 </div>
 
-                <!-- Racha de días consecutivos -->
-                <div class="app-card p-3.5 mb-3.5 shadow-sm" style="background: linear-gradient(135deg, rgba(249, 115, 22, 0.13) 0%, var(--bg-card) 75%)">
+                <!-- Racha de días consecutivos en tiempo real -->
+                <div class="app-card p-3.5 mb-3.5 shadow-sm" style="background: ${streak.days > 0 ? 'linear-gradient(135deg, rgba(249, 115, 22, 0.13) 0%, var(--bg-card) 75%)' : 'var(--bg-card)'}">
                     <div class="flex items-center justify-between mb-2.5">
                         <div class="flex items-center gap-2.5">
-                            <span class="text-lg">🔥</span>
+                            <span class="text-lg" style="${streak.days > 0 ? '' : 'filter: grayscale(1); opacity: 0.5'}">🔥</span>
                             <div>
-                                <p class="text-sm font-extrabold">Racha de ${streak.days} días seguidos</p>
-                                <p class="text-[11px]" style="color: var(--text-secondary)">Completa tus tareas o entreno para sumar hoy</p>
+                                <p class="text-sm font-extrabold">${streak.days === 0 ? 'Sin racha activa' : `Racha de ${streak.days} ${streak.days === 1 ? 'día' : 'días'}`}</p>
+                                <p class="text-[11px]" style="color: var(--text-secondary)">Completa el 100% de tareas o un entreno hoy</p>
                             </div>
                         </div>
-                        <span class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-orange-500/15 text-orange-500">Activa</span>
+                        <span class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${streak.todayDone ? 'bg-orange-500/15 text-orange-500' : ''}" style="${streak.todayDone ? '' : 'background-color: var(--bg-screen); color: var(--text-secondary)'}">${streak.todayDone ? 'Completado hoy' : 'Pendiente hoy'}</span>
                     </div>
                     <div class="grid grid-cols-7 gap-1.5 text-center">
                         ${weekLetters.map((ltr, idx) => {
-                            const doneDay = streak.weekDays && streak.weekDays[idx];
-                            return `<div class="py-1.5 rounded-xl flex flex-col items-center justify-center" style="background-color: ${doneDay ? 'rgba(249, 115, 22, 0.18)' : 'var(--bg-screen)'}">
-                                <span class="text-[10px] font-extrabold" style="color: ${doneDay ? '#F97316' : 'var(--text-secondary)'}">${ltr}</span>
+                            const doneDay = streak.weekDays[idx];
+                            const isToday = idx === todayWeekIdx;
+                            return `<div class="py-1.5 rounded-xl flex flex-col items-center justify-center" style="background-color: ${doneDay ? 'rgba(249, 115, 22, 0.18)' : 'var(--bg-screen)'}; ${isToday && !doneDay ? 'border: 1px dashed var(--accent-color)' : ''}">
+                                <span class="text-[10px] font-extrabold" style="color: ${doneDay ? '#F97316' : isToday ? 'var(--accent-color)' : 'var(--text-secondary)'}">${ltr}</span>
                                 <span class="text-xs mt-0.5">${doneDay ? '🔥' : '·'}</span>
                             </div>`;
                         }).join('')}
@@ -1287,6 +1324,7 @@
            3. SECCIÓN AGENDA / CALENDARIO
            ========================================================= */
         function renderCalendarSection() {
+            const currentTodayKey = getTodayKey();
             const firstDay = (new Date(ui.calYear, ui.calMonth, 1).getDay() + 6) % 7;
             const daysInMonth = new Date(ui.calYear, ui.calMonth + 1, 0).getDate();
             let cells = '';
@@ -1295,7 +1333,7 @@
                 const ds = `${ui.calYear}-${String(ui.calMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                 const evs = appState.events.filter(e => e.date === ds);
                 const sel = ui.calSelectedDate === ds;
-                cells += `<button onclick="ui.calSelectedDate='${ds}'; renderApp()" class="h-10 rounded-xl flex flex-col items-center justify-center cursor-pointer" style="background-color: ${sel ? 'var(--accent-color)' : ds === todayKey ? 'var(--accent-soft)' : 'transparent'}; color: ${sel ? '#FFF' : 'var(--text-primary)'}">
+                cells += `<button onclick="ui.calSelectedDate='${ds}'; renderApp()" class="h-10 rounded-xl flex flex-col items-center justify-center cursor-pointer" style="background-color: ${sel ? 'var(--accent-color)' : ds === currentTodayKey ? 'var(--accent-soft)' : 'transparent'}; color: ${sel ? '#FFF' : 'var(--text-primary)'}">
                     <span class="text-xs font-extrabold leading-none">${d}</span>
                     <div class="flex gap-0.5 mt-1 h-1">${evs.slice(0, 3).map(e => `<span class="w-1 h-1 rounded-full" style="background-color: ${sel ? '#FFF' : (calendarColors.find(c => c.id === e.color)?.hex || '#007AFF')}"></span>`).join('')}</div>
                 </button>`;
@@ -1440,9 +1478,10 @@
             const banner = document.getElementById('push-banner');
             const title = document.getElementById('banner-title');
             const sub = document.getElementById('banner-sub');
+            const streak = computeStreakStats();
             if (banner && title && sub) {
                 title.textContent = `¡Buenos días, ${appState.settings.name}!`;
-                sub.textContent = `${appState.tasks.filter(t => !t.done).length} tareas pendientes · Racha ${appState.streak?.days || 5}d`;
+                sub.textContent = `${appState.tasks.filter(t => !t.done).length} tareas pendientes · Racha ${streak.days}d`;
                 banner.classList.add('show');
                 setTimeout(() => banner.classList.remove('show'), 4000);
             }
@@ -1817,6 +1856,7 @@
             const reps = parseInt(document.getElementById('gym-reps').value, 10) || 1;
             appState.gymLogs.unshift({ id: Date.now(), exercise: ex, muscle, weight, reps, date: 'Hoy' });
             document.getElementById('gym-ex').value = '';
+            registerStreakProgress();
             saveState();
             closeModal('gym-pr');
             renderApp();
