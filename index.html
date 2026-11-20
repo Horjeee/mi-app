@@ -352,6 +352,30 @@
         function getTodayKey() {
             return toDateKey(new Date());
         }
+        function formatShortDate(dateStr) {
+            if (!dateStr) return '';
+            const today = getTodayKey();
+            const tomorrow = toDateKey(addDays(new Date(), 1));
+            const yesterday = toDateKey(addDays(new Date(), -1));
+            if (dateStr === today) return 'Hoy';
+            if (dateStr === tomorrow) return 'Mañana';
+            if (dateStr === yesterday) return 'Ayer';
+            const parts = dateStr.split('-');
+            if (parts.length !== 3) return dateStr;
+            const mShort = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+            return `${parseInt(parts[2], 10)} ${mShort[parseInt(parts[1], 10) - 1] || parts[1]}`;
+        }
+        function isTaskOverdue(t) {
+            if (!t || t.done || !t.dueDate) return false;
+            return t.dueDate < getTodayKey();
+        }
+        function isTaskArchived(t) {
+            if (!t || !t.done) return false;
+            const today = getTodayKey();
+            // Si se completó un día anterior a hoy, va al apartado inferior de Tareas completadas
+            if (t.completedDate) return t.completedDate < today;
+            return false;
+        }
 
         const todayObj = new Date();
         const todayKey = getTodayKey();
@@ -397,9 +421,9 @@
             },
             morning: { enabled: true, time: '08:00' },
             tasks: [
-                { id: 101, title: 'Revisar objetivos del día', category: 'Personal', done: true },
-                { id: 102, title: 'Preparar mochila del gimnasio', category: 'Salud', done: false },
-                { id: 103, title: 'Leer 20 páginas antes de dormir', category: 'Hábito', done: false }
+                { id: 101, title: 'Revisar objetivos del día', category: 'Personal', dueDate: todayKey, done: true, completedDate: todayKey },
+                { id: 102, title: 'Preparar mochila del gimnasio', category: 'Salud', dueDate: todayKey, done: false, completedDate: null },
+                { id: 103, title: 'Leer 20 páginas antes de dormir', category: 'Hábito', dueDate: todayKey, done: false, completedDate: null }
             ],
             events: [
                 { id: 201, date: todayKey, time: '10:00', title: 'Reunión / Estudio', color: 'purple' },
@@ -479,6 +503,12 @@
         if (!appState.streak || !Array.isArray(appState.streak.completedDates)) {
             appState.streak = { completedDates: [] };
         }
+        // Normalizar tareas antiguas sin completedDate
+        appState.tasks.forEach(t => {
+            if (t.done && !t.completedDate) {
+                t.completedDate = getTodayKey();
+            }
+        });
 
         function saveState() {
             try {
@@ -492,6 +522,7 @@
         const ui = {
             activeTab: 'inicio',
             taskFilter: 'all',
+            showCompletedArchive: true,
             calYear: todayObj.getFullYear(),
             calMonth: todayObj.getMonth(),
             calSelectedDate: todayKey,
@@ -727,6 +758,10 @@
         }
 
         function openModal(name) {
+            if (name === 'task') {
+                const dInp = document.getElementById('task-due');
+                if (dInp && !dInp.value) dInp.value = getTodayKey();
+            }
             const el = document.getElementById(`modal-${name}`);
             if (el) el.classList.add('open');
         }
@@ -782,7 +817,6 @@
             const set = new Set(appState.streak.completedDates);
             let count = 0;
 
-            // Si hoy está completado cuenta desde hoy hacia atrás; si aún no, desde ayer (si ayer no se cumplió, vuelve a 0)
             let cursor = set.has(currentTodayKey) ? now : (set.has(yesterdayKey) ? addDays(now, -1) : null);
             while (cursor && set.has(toDateKey(cursor))) {
                 count++;
@@ -891,12 +925,22 @@
                             <button onclick="saveNewTask()" class="text-xs font-extrabold cursor-pointer" style="color: var(--accent-color)">Añadir</button>
                         </div>
                         <input id="task-title" type="text" placeholder="¿Qué necesitas hacer?" class="ui-input mb-2.5">
-                        <select id="task-cat" class="ui-input">
-                            <option value="Personal">Personal</option>
-                            <option value="Trabajo">Trabajo</option>
-                            <option value="Salud">Salud</option>
-                            <option value="Hábito">Hábito</option>
-                        </select>
+                        <div class="grid grid-cols-2 gap-2 mb-2">
+                            <div>
+                                <label class="text-[10px] font-bold uppercase block mb-1" style="color: var(--text-secondary)">Categoría</label>
+                                <select id="task-cat" class="ui-input">
+                                    <option value="Personal">Personal</option>
+                                    <option value="Trabajo">Trabajo</option>
+                                    <option value="Salud">Salud</option>
+                                    <option value="Hábito">Hábito</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-[10px] font-bold uppercase block mb-1" style="color: var(--text-secondary)">Fecha límite</label>
+                                <input id="task-due" type="date" value="${getTodayKey()}" class="ui-input">
+                            </div>
+                        </div>
+                        <button type="button" onclick="document.getElementById('task-due').value=''" class="text-[11px] font-bold cursor-pointer" style="color: var(--text-secondary)">Sin fecha límite</button>
                     </div>
                 </div>
 
@@ -997,8 +1041,9 @@
            ========================================================= */
         function renderHomeSection() {
             const currentTodayKey = getTodayKey();
-            const totalTasks = appState.tasks.length;
-            const doneTasks = appState.tasks.filter(t => t.done).length;
+            const activeTasks = appState.tasks.filter(t => !isTaskArchived(t));
+            const totalTasks = activeTasks.length;
+            const doneTasks = activeTasks.filter(t => t.done).length;
             const pct = totalTasks === 0 ? 0 : Math.round((doneTasks / totalTasks) * 100);
             const dashOffset = 150.8 - (pct / 100) * 150.8;
             const todayEvs = appState.events.filter(e => e.date === currentTodayKey);
@@ -1091,12 +1136,16 @@
                         <button onclick="switchTab('tareas')" class="text-[11px] font-bold cursor-pointer" style="color: var(--accent-color)">Todas ›</button>
                     </div>
                     <div class="space-y-2">
-                        ${appState.tasks.slice(0, 3).map(t => `
-                            <div onclick="toggleTaskItem(${t.id})" class="flex items-center gap-2.5 text-xs py-2 px-3 rounded-xl cursor-pointer" style="background-color: var(--bg-screen)">
-                                <span class="w-4 h-4 rounded-full flex items-center justify-center text-[10px] text-white font-black flex-shrink-0" style="background-color: ${t.done ? 'var(--accent-color)' : 'transparent'}; border: 1.5px solid var(--accent-color)">${t.done ? '✓' : ''}</span>
-                                <span class="font-semibold truncate ${t.done ? 'line-through opacity-50' : ''}">${t.title}</span>
-                            </div>
-                        `).join('')}
+                        ${activeTasks.slice(0, 3).map(t => {
+                            const overdue = isTaskOverdue(t);
+                            return `<div onclick="toggleTaskItem(${t.id})" class="flex items-center justify-between gap-2 text-xs py-2 px-3 rounded-xl cursor-pointer" style="background-color: ${overdue ? 'rgba(239, 68, 68, 0.12)' : 'var(--bg-screen)'}; ${overdue ? 'border: 1px solid rgba(239, 68, 68, 0.45)' : ''}">
+                                <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                                    <span class="w-4 h-4 rounded-full flex items-center justify-center text-[10px] text-white font-black flex-shrink-0" style="background-color: ${t.done ? 'var(--accent-color)' : 'transparent'}; border: 1.5px solid ${overdue ? '#EF4444' : 'var(--accent-color)'}">${t.done ? '✓' : ''}</span>
+                                    <span class="font-semibold truncate ${t.done ? 'line-through opacity-50' : overdue ? 'text-red-500 font-bold' : ''}">${t.title}</span>
+                                </div>
+                                ${overdue ? `<span class="text-[10px] font-extrabold text-red-500 flex-shrink-0">Vencida</span>` : t.dueDate ? `<span class="text-[10px] font-bold flex-shrink-0" style="color: var(--text-secondary)">${formatShortDate(t.dueDate)}</span>` : ''}
+                            </div>`;
+                        }).join('')}
                     </div>
                 </div>
 
@@ -1110,17 +1159,20 @@
         }
 
         /* =========================================================
-           2. SECCIÓN TAREAS + MODO FOCUS + CONFETI
+           2. SECCIÓN TAREAS + FECHAS LÍMITE + VENCIDAS + ARCHIVO
            ========================================================= */
         function renderTasksSection() {
-            const total = appState.tasks.length;
-            const done = appState.tasks.filter(t => t.done).length;
+            const activeTasks = appState.tasks.filter(t => !isTaskArchived(t));
+            const archivedTasks = appState.tasks.filter(t => isTaskArchived(t));
+
+            const total = activeTasks.length;
+            const done = activeTasks.filter(t => t.done).length;
             const pct = total === 0 ? 0 : Math.round((done / total) * 100);
             const dashOffset = 188.5 - (pct / 100) * 188.5;
             const fs = ui.focusSession;
             const focusTask = fs.activeTaskId ? appState.tasks.find(t => t.id === fs.activeTaskId) : null;
 
-            const filtered = appState.tasks.filter(t => {
+            const filtered = activeTasks.filter(t => {
                 if (ui.taskFilter === 'pending') return !t.done;
                 if (ui.taskFilter === 'done') return t.done;
                 return true;
@@ -1170,11 +1222,11 @@
                         <span class="absolute text-sm font-extrabold">${pct}%</span>
                     </div>
                     <div class="flex-1 min-w-0">
-                        <p class="text-sm font-extrabold">${pct === 100 && total > 0 ? '🎉 ¡Día completado al 100%!' : 'Progreso diario'}</p>
-                        <p class="text-xs mt-0.5" style="color: var(--text-secondary)">${done} de ${total} completadas</p>
+                        <p class="text-sm font-extrabold">${pct === 100 && total > 0 ? '🎉 ¡Día completado al 100%!' : 'Progreso de hoy'}</p>
+                        <p class="text-xs mt-0.5" style="color: var(--text-secondary)">${done} de ${total} completadas hoy</p>
                         <div class="flex gap-1.5 mt-2">
                             ${['all', 'pending', 'done'].map(f => {
-                                const lbl = f === 'all' ? 'Todas' : f === 'pending' ? 'Pendientes' : 'Hechas';
+                                const lbl = f === 'all' ? 'Todas' : f === 'pending' ? 'Pendientes' : 'Hechas hoy';
                                 const act = ui.taskFilter === f;
                                 return `<button onclick="ui.taskFilter='${f}'; renderApp()" class="px-2.5 py-1 rounded-full text-[10.5px] font-bold cursor-pointer" style="background-color: ${act ? 'var(--accent-color)' : 'var(--bg-screen)'}; color: ${act ? '#FFF' : 'var(--text-secondary)'}">${lbl}</button>`;
                             }).join('')}
@@ -1182,25 +1234,63 @@
                     </div>
                 </div>
 
+                <!-- Lista principal de tareas activas / de hoy -->
                 <div class="space-y-2.5">
-                    ${filtered.map(t => `
-                        <div class="app-card p-3 flex items-center justify-between gap-2.5 shadow-sm">
+                    ${filtered.length === 0 ? `<div class="app-card p-4 text-center text-xs" style="color: var(--text-secondary)">No hay tareas en esta vista.</div>` : filtered.map(t => {
+                        const overdue = isTaskOverdue(t);
+                        return `
+                        <div class="app-card p-3 flex items-center justify-between gap-2.5 shadow-sm" style="${overdue ? 'background-color: rgba(239, 68, 68, 0.13); border: 1.5px solid #EF4444;' : ''}">
                             <div onclick="toggleTaskItem(${t.id})" class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
-                                <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style="background-color: ${t.done ? 'var(--accent-color)' : 'transparent'}; border: 2px solid ${t.done ? 'var(--accent-color)' : 'var(--border-color)'}">
-                                    ${t.done ? '<span class="text-white text-[11px] font-black">✓</span>' : ''}
+                                <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style="background-color: ${t.done ? 'var(--accent-color)' : 'transparent'}; border: 2px solid ${overdue ? '#EF4444' : t.done ? 'var(--accent-color)' : 'var(--border-color)'}">
+                                    ${t.done ? '<span class="text-white text-[11px] font-black">✓</span>' : overdue ? '<span class="text-red-500 text-[10px] font-black">!</span>' : ''}
                                 </div>
                                 <div class="min-w-0 flex-1">
-                                    <p class="text-sm font-bold truncate ${t.done ? 'line-through opacity-50' : ''}">${t.title}</p>
-                                    <span class="text-[10.5px] font-semibold" style="color: var(--text-secondary)">${t.category || 'Personal'}</span>
+                                    <p class="text-sm font-bold truncate ${t.done ? 'line-through opacity-50' : overdue ? 'text-red-500 font-extrabold' : ''}">${t.title}</p>
+                                    <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+                                        <span class="text-[10.5px] font-semibold" style="color: ${overdue ? '#EF4444' : 'var(--text-secondary)'}">${t.category || 'Personal'}</span>
+                                        ${t.dueDate ? `<span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md" style="background-color: ${overdue ? 'rgba(239, 68, 68, 0.2)' : 'var(--bg-screen)'}; color: ${overdue ? '#EF4444' : 'var(--text-secondary)'}">${overdue ? `⚠️ Vencida (${formatShortDate(t.dueDate)}) · Sin hacer` : `📅 ${formatShortDate(t.dueDate)}`}</span>` : ''}
+                                    </div>
                                 </div>
                             </div>
-                            <div class="flex items-center gap-1.5">
-                                ${!t.done ? `<button onclick="startFocusSession(${t.id})" class="px-2.5 py-1.5 rounded-xl text-[10.5px] font-extrabold cursor-pointer" style="background-color: var(--accent-soft); color: var(--accent-color)">🍅 Focus</button>` : ''}
-                                <button onclick="deleteTaskItem(${t.id})" class="text-xs opacity-50 px-2 py-1 cursor-pointer">✕</button>
+                            <div class="flex items-center gap-1.5 flex-shrink-0">
+                                ${overdue
+                                    ? `<button onclick="deleteTaskItem(${t.id})" class="px-2.5 py-1.5 rounded-xl text-[10.5px] font-extrabold text-white bg-red-500 shadow-sm cursor-pointer">🗑️ Eliminar</button>`
+                                    : `${!t.done ? `<button onclick="startFocusSession(${t.id})" class="px-2.5 py-1.5 rounded-xl text-[10.5px] font-extrabold cursor-pointer" style="background-color: var(--accent-soft); color: var(--accent-color)">🍅 Focus</button>` : ''}
+                                       <button onclick="deleteTaskItem(${t.id})" class="text-xs opacity-50 px-2 py-1 cursor-pointer">✕</button>`
+                                }
                             </div>
-                        </div>
-                    `).join('')}
+                        </div>`;
+                    }).join('')}
                 </div>
+
+                <!-- Apartado inferior: Tareas completadas de días anteriores -->
+                ${archivedTasks.length > 0 ? `
+                    <div class="mt-5 pt-3.5" style="border-top: 1px solid var(--border-color)">
+                        <div class="flex items-center justify-between mb-2.5">
+                            <button onclick="ui.showCompletedArchive=!ui.showCompletedArchive; renderApp()" class="flex items-center gap-1.5 text-xs font-extrabold cursor-pointer" style="color: var(--text-secondary)">
+                                <span>📦 Tareas completadas (${archivedTasks.length})</span>
+                                <span>${ui.showCompletedArchive ? '▾' : '▸'}</span>
+                            </button>
+                            ${ui.showCompletedArchive ? `<button onclick="clearArchivedTasks()" class="text-[10.5px] font-bold text-rose-500 cursor-pointer">Vaciar historial</button>` : ''}
+                        </div>
+                        ${ui.showCompletedArchive ? `
+                            <div class="space-y-2 opacity-80">
+                                ${archivedTasks.map(t => `
+                                    <div class="app-card p-2.5 flex items-center justify-between gap-2">
+                                        <div onclick="toggleTaskItem(${t.id})" class="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer">
+                                            <div class="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 bg-emerald-500 text-white text-[10px] font-black">✓</div>
+                                            <div class="min-w-0 flex-1">
+                                                <p class="text-xs font-semibold line-through truncate opacity-75">${t.title}</p>
+                                                <span class="text-[9.5px] font-semibold" style="color: var(--text-secondary)">Completada ${formatShortDate(t.completedDate)} · ${t.category || 'Personal'}</span>
+                                            </div>
+                                        </div>
+                                        <button onclick="deleteTaskItem(${t.id})" class="text-xs opacity-50 px-2 py-1 cursor-pointer">✕</button>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                ` : ''}
             `;
         }
 
@@ -1282,9 +1372,12 @@
         function toggleTaskItem(id) {
             const t = appState.tasks.find(x => x.id === id);
             if (t) {
-                const wasAllDone = appState.tasks.length > 0 && appState.tasks.every(x => x.done);
+                const activeBefore = appState.tasks.filter(x => !isTaskArchived(x));
+                const wasAllDone = activeBefore.length > 0 && activeBefore.every(x => x.done);
                 t.done = !t.done;
-                const isAllDoneNow = appState.tasks.length > 0 && appState.tasks.every(x => x.done);
+                t.completedDate = t.done ? getTodayKey() : null;
+                const activeAfter = appState.tasks.filter(x => !isTaskArchived(x));
+                const isAllDoneNow = activeAfter.length > 0 && activeAfter.every(x => x.done);
                 if (isAllDoneNow) registerStreakProgress();
                 saveState();
                 renderApp();
@@ -1308,13 +1401,34 @@
             });
         }
 
+        function clearArchivedTasks() {
+            const prevTasks = [...appState.tasks];
+            appState.tasks = appState.tasks.filter(t => !isTaskArchived(t));
+            saveState();
+            renderApp();
+            showUndoToast('Historial de completadas vaciado', () => {
+                appState.tasks = prevTasks;
+                saveState();
+                renderApp();
+            });
+        }
+
         function saveNewTask() {
             const inp = document.getElementById('task-title');
             const cat = document.getElementById('task-cat');
+            const due = document.getElementById('task-due');
             const title = inp ? inp.value.trim() : '';
             if (!title) return;
-            appState.tasks.unshift({ id: Date.now(), title, category: cat ? cat.value : 'Personal', done: false });
+            appState.tasks.unshift({
+                id: Date.now(),
+                title,
+                category: cat ? cat.value : 'Personal',
+                dueDate: due && due.value ? due.value : null,
+                done: false,
+                completedDate: null
+            });
             inp.value = '';
+            if (due) due.value = getTodayKey();
             saveState();
             closeModal('task');
             renderApp();
@@ -1479,9 +1593,10 @@
             const title = document.getElementById('banner-title');
             const sub = document.getElementById('banner-sub');
             const streak = computeStreakStats();
+            const pendingCount = appState.tasks.filter(t => !t.done && !isTaskArchived(t)).length;
             if (banner && title && sub) {
                 title.textContent = `¡Buenos días, ${appState.settings.name}!`;
-                sub.textContent = `${appState.tasks.filter(t => !t.done).length} tareas pendientes · Racha ${streak.days}d`;
+                sub.textContent = `${pendingCount} tareas pendientes · Racha ${streak.days}d`;
                 banner.classList.add('show');
                 setTimeout(() => banner.classList.remove('show'), 4000);
             }
