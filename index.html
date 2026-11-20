@@ -435,7 +435,8 @@
            ========================================================= */
         const appState = {
             settings: {
-                name: 'Alex',
+                name: '',
+                onboarded: false,
                 goal: 'Organización y Fuerza',
                 units: 'kg',
                 darkMode: false,
@@ -519,13 +520,20 @@
             ]
         };
 
+        let hasExistingStorage = false;
         try {
             const saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('midia_dual_sim_v5');
             if (saved) {
+                hasExistingStorage = true;
                 const parsed = JSON.parse(saved);
                 Object.assign(appState, parsed);
             }
         } catch (e) {}
+
+        // Si ya existía registro previo antes de esta actualización, respetarlo salvo si el nombre quedó vacío
+        if (hasExistingStorage && appState.settings && appState.settings.onboarded === undefined) {
+            appState.settings.onboarded = Boolean(appState.settings.name && appState.settings.name.trim());
+        }
 
         // Normalizar estructura de racha real por fechas
         if (!appState.streak || !Array.isArray(appState.streak.completedDates)) {
@@ -542,7 +550,6 @@
            SINCRONIZACIÓN AUTOMÁTICA TAREAS <-> CALENDARIO (AGENDA)
            ========================================================= */
         function syncTasksToCalendar() {
-            // Mantener eventos manuales y regenerar los vinculados a tareas con fecha límite
             const manualEvents = appState.events.filter(e => !e.linkedTaskId);
             const taskEvents = appState.tasks
                 .filter(t => Boolean(t.dueDate))
@@ -562,7 +569,6 @@
             appState.events = [...manualEvents, ...taskEvents];
         }
 
-        // Sincronizar al arrancar
         syncTasksToCalendar();
 
         function saveState() {
@@ -570,6 +576,23 @@
             try {
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
             } catch (e) {}
+        }
+
+        function completeInitialOnboarding() {
+            const inp = document.getElementById('onboarding-name-input');
+            const err = document.getElementById('onboarding-error');
+            const val = inp ? inp.value.trim() : '';
+            if (!val) {
+                if (err) err.classList.remove('hidden');
+                if (inp) inp.focus();
+                return;
+            }
+            appState.settings.name = val;
+            appState.settings.onboarded = true;
+            saveState();
+            renderApp();
+            attachSwipeNavigation();
+            setTimeout(() => drawRunOverlay(), 150);
         }
 
         /* =========================================================
@@ -677,6 +700,7 @@
             const isBlockedTarget = (target) => {
                 if (!target || !target.closest) return false;
                 return Boolean(
+                    !appState.settings.onboarded ||
                     target.closest('.running-map-box') ||
                     target.closest('iframe') ||
                     target.closest('input') ||
@@ -860,7 +884,7 @@
            ========================================================= */
         function getCurrentWeekDates() {
             const now = new Date();
-            const dayOfWeek = (now.getDay() + 6) % 7; // 0 = Lunes, 6 = Domingo
+            const dayOfWeek = (now.getDay() + 6) % 7;
             const monday = addDays(now, -dayOfWeek);
             return Array.from({ length: 7 }, (_, i) => toDateKey(addDays(monday, i)));
         }
@@ -907,6 +931,45 @@
         }
 
         /* =========================================================
+           PANTALLA INICIAL DE REGISTRO DE NOMBRE (PRIMER USO)
+           ========================================================= */
+        function renderOnboardingScreen() {
+            return `
+                <div class="safe-top-bar"></div>
+                <div class="flex-1 flex flex-col justify-center px-6 pb-12 max-w-md mx-auto w-full">
+                    <div class="app-card p-6 shadow-xl text-center">
+                        <div class="w-16 h-16 rounded-3xl mx-auto mb-4 flex items-center justify-center text-3xl text-white shadow-lg" style="background: linear-gradient(135deg, var(--accent-color) 0%, #5856D6 100%)">
+                            👋
+                        </div>
+                        <p class="text-[11px] font-extrabold uppercase tracking-widest mb-1" style="color: var(--accent-color)">Bienvenido a Mi Día</p>
+                        <h1 class="text-2xl font-extrabold tracking-tight mb-2">¿Cómo te llamas?</h1>
+                        <p class="text-xs mb-5 leading-relaxed" style="color: var(--text-secondary)">
+                            Tu nombre se guardará de forma permanente en este dispositivo para personalizar tu panel diario, tus avisos y tus rutinas.
+                        </p>
+
+                        <input
+                            id="onboarding-name-input"
+                            type="text"
+                            placeholder="Escribe tu nombre..."
+                            autocomplete="given-name"
+                            onkeydown="if(event.key==='Enter') completeInitialOnboarding()"
+                            class="ui-input text-center font-extrabold text-base !py-3 mb-2"
+                        >
+                        <p id="onboarding-error" class="text-[11px] font-bold text-rose-500 mb-3 hidden">Por favor, introduce tu nombre para continuar.</p>
+
+                        <button
+                            onclick="completeInitialOnboarding()"
+                            class="w-full py-3.5 rounded-2xl text-sm font-extrabold text-white shadow-md cursor-pointer tap-btn mt-2"
+                            style="background-color: var(--accent-color)"
+                        >
+                            Comenzar →
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        /* =========================================================
            RENDER PRINCIPAL DE LA APP
            ========================================================= */
         function renderApp() {
@@ -919,6 +982,16 @@
             screen.classList.toggle('dark-mode', isDark);
             screen.style.setProperty('--accent-color', appState.settings.accent || '#007AFF');
             screen.style.setProperty('--accent-soft', appState.settings.accentSoft || 'rgba(0, 122, 255, 0.14)');
+
+            // Mostrar pantalla de bienvenida si es la primera vez que entra
+            if (!appState.settings.onboarded) {
+                screen.innerHTML = renderOnboardingScreen();
+                setTimeout(() => {
+                    const inp = document.getElementById('onboarding-name-input');
+                    if (inp) inp.focus();
+                }, 100);
+                return;
+            }
 
             const activeIdx = Math.max(0, TAB_ORDER.indexOf(ui.activeTab));
 
@@ -1123,7 +1196,7 @@
                 <div class="flex items-center justify-between mb-3.5">
                     <div>
                         <p class="text-[11px] font-bold uppercase tracking-wider" style="color: var(--text-secondary)">Panel Diario</p>
-                        <h1 class="text-2xl font-extrabold tracking-tight">Hola, ${appState.settings.name} 👋</h1>
+                        <h1 class="text-2xl font-extrabold tracking-tight">Hola, ${appState.settings.name || 'Amigo'} 👋</h1>
                     </div>
                     <div class="flex items-center gap-2">
                         <div class="px-3 py-1.5 rounded-full app-card flex items-center gap-1 shadow-sm" style="border-color: ${streak.days > 0 ? 'rgba(249, 115, 22, 0.35)' : 'var(--border-color)'}">
@@ -1679,7 +1752,7 @@
             const streak = computeStreakStats();
             const pendingCount = appState.tasks.filter(t => !t.done && !isTaskArchived(t)).length;
             if (banner && title && sub) {
-                title.textContent = `¡Buenos días, ${appState.settings.name}!`;
+                title.textContent = `¡Buenos días, ${appState.settings.name || 'Amigo'}!`;
                 sub.textContent = `${pendingCount} tareas pendientes · Racha ${streak.days}d`;
                 banner.classList.add('show');
                 setTimeout(() => banner.classList.remove('show'), 4000);
@@ -2340,7 +2413,7 @@
 
                 <div class="app-card p-3.5 mb-3.5 shadow-sm">
                     <p class="text-[10.5px] font-bold uppercase mb-1.5" style="color: var(--text-secondary)">Tu nombre</p>
-                    <input type="text" value="${appState.settings.name}" onchange="appState.settings.name=this.value.trim()||'Alex'; saveState(); renderApp()" class="ui-input font-extrabold">
+                    <input type="text" value="${appState.settings.name}" onchange="appState.settings.name=this.value.trim()||appState.settings.name; appState.settings.onboarded=true; saveState(); renderApp()" class="ui-input font-extrabold">
                 </div>
 
                 <div class="app-card p-3.5 mb-3.5 shadow-sm space-y-3">
