@@ -339,7 +339,7 @@
 
     <script>
         /* =========================================================
-           UTILIDADES DE FECHA Y CATÁLOGOS
+           UTILIDADES DE FECHA, HORA Y CATÁLOGOS
            ========================================================= */
         function toDateKey(d) {
             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -351,6 +351,10 @@
         }
         function getTodayKey() {
             return toDateKey(new Date());
+        }
+        function getCurrentTimeStr() {
+            const now = new Date();
+            return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
         }
         function formatShortDate(dateStr) {
             if (!dateStr) return '';
@@ -365,14 +369,23 @@
             const mShort = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
             return `${parseInt(parts[2], 10)} ${mShort[parseInt(parts[1], 10) - 1] || parts[1]}`;
         }
+        function formatTaskDeadline(t) {
+            if (!t || !t.dueDate) return '';
+            const dStr = formatShortDate(t.dueDate);
+            return t.dueTime ? `${dStr} · ${t.dueTime}` : dStr;
+        }
         function isTaskOverdue(t) {
             if (!t || t.done || !t.dueDate) return false;
-            return t.dueDate < getTodayKey();
+            const today = getTodayKey();
+            if (t.dueDate < today) return true;
+            if (t.dueDate === today && t.dueTime) {
+                return t.dueTime < getCurrentTimeStr();
+            }
+            return false;
         }
         function isTaskArchived(t) {
             if (!t || !t.done) return false;
             const today = getTodayKey();
-            // Si se completó un día anterior a hoy, va al apartado inferior de Tareas completadas
             if (t.completedDate) return t.completedDate < today;
             return false;
         }
@@ -383,11 +396,26 @@
 
         const calendarColors = [
             { id: 'blue', name: 'Personal', hex: '#007AFF', soft: 'rgba(0, 122, 255, 0.16)' },
-            { id: 'purple', name: 'Trabajo', hex: '#AF52DE', soft: 'rgba(175, 82, 222, 0.16)' },
+            { id: 'purple', name: 'Trabajo / Estudios', hex: '#AF52DE', soft: 'rgba(175, 82, 222, 0.16)' },
             { id: 'green', name: 'Salud', hex: '#10B981', soft: 'rgba(16, 185, 129, 0.16)' },
-            { id: 'orange', name: 'Social', hex: '#F97316', soft: 'rgba(249, 115, 22, 0.16)' },
+            { id: 'orange', name: 'Autoescuela / Social', hex: '#F97316', soft: 'rgba(249, 115, 22, 0.16)' },
             { id: 'rose', name: 'Importante', hex: '#F43F5E', soft: 'rgba(244, 63, 94, 0.16)' }
         ];
+
+        const taskCategories = [
+            { id: 'Personal', label: 'Personal', icon: '👤', color: 'blue' },
+            { id: 'Estudios', label: 'Estudios', icon: '📚', color: 'purple' },
+            { id: 'Autoescuela', label: 'Autoescuela', icon: '🚗', color: 'orange' },
+            { id: 'Trabajo', label: 'Trabajo', icon: '💼', color: 'purple' },
+            { id: 'Salud', label: 'Salud', icon: '💪', color: 'green' },
+            { id: 'Hábito', label: 'Hábito', icon: '✨', color: 'green' },
+            { id: 'Compras', label: 'Compras', icon: '🛒', color: 'rose' },
+            { id: 'Hogar', label: 'Hogar', icon: '🏠', color: 'blue' }
+        ];
+
+        function getCategoryMeta(catName) {
+            return taskCategories.find(c => c.id === catName) || taskCategories[0];
+        }
 
         const muscleCatalog = {
             pecho: { label: 'Pecho', icon: '🏋️' },
@@ -421,9 +449,9 @@
             },
             morning: { enabled: true, time: '08:00' },
             tasks: [
-                { id: 101, title: 'Revisar objetivos del día', category: 'Personal', dueDate: todayKey, done: true, completedDate: todayKey },
-                { id: 102, title: 'Preparar mochila del gimnasio', category: 'Salud', dueDate: todayKey, done: false, completedDate: null },
-                { id: 103, title: 'Leer 20 páginas antes de dormir', category: 'Hábito', dueDate: todayKey, done: false, completedDate: null }
+                { id: 101, title: 'Revisar objetivos del día', category: 'Personal', dueDate: todayKey, dueTime: '09:30', done: true, completedDate: todayKey },
+                { id: 102, title: 'Preparar mochila del gimnasio', category: 'Salud', dueDate: todayKey, dueTime: '18:00', done: false, completedDate: null },
+                { id: 103, title: 'Hacer test de autoescuela', category: 'Autoescuela', dueDate: todayKey, dueTime: '20:30', done: false, completedDate: null }
             ],
             events: [
                 { id: 201, date: todayKey, time: '10:00', title: 'Reunión / Estudio', color: 'purple' },
@@ -503,14 +531,42 @@
         if (!appState.streak || !Array.isArray(appState.streak.completedDates)) {
             appState.streak = { completedDates: [] };
         }
-        // Normalizar tareas antiguas sin completedDate
+        // Normalizar tareas antiguas
         appState.tasks.forEach(t => {
             if (t.done && !t.completedDate) {
                 t.completedDate = getTodayKey();
             }
         });
 
+        /* =========================================================
+           SINCRONIZACIÓN AUTOMÁTICA TAREAS <-> CALENDARIO (AGENDA)
+           ========================================================= */
+        function syncTasksToCalendar() {
+            // Mantener eventos manuales y regenerar los vinculados a tareas con fecha límite
+            const manualEvents = appState.events.filter(e => !e.linkedTaskId);
+            const taskEvents = appState.tasks
+                .filter(t => Boolean(t.dueDate))
+                .map(t => {
+                    const catMeta = getCategoryMeta(t.category);
+                    return {
+                        id: `task_ev_${t.id}`,
+                        linkedTaskId: t.id,
+                        date: t.dueDate,
+                        time: t.dueTime || 'Todo el día',
+                        title: `${t.done ? '☑️' : '✅'} ${t.title}`,
+                        color: catMeta.color,
+                        done: t.done,
+                        overdue: isTaskOverdue(t)
+                    };
+                });
+            appState.events = [...manualEvents, ...taskEvents];
+        }
+
+        // Sincronizar al arrancar
+        syncTasksToCalendar();
+
         function saveState() {
+            syncTasksToCalendar();
             try {
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
             } catch (e) {}
@@ -760,7 +816,9 @@
         function openModal(name) {
             if (name === 'task') {
                 const dInp = document.getElementById('task-due');
+                const tInp = document.getElementById('task-time');
                 if (dInp && !dInp.value) dInp.value = getTodayKey();
+                if (tInp && !tInp.value) tInp.value = '20:00';
             }
             const el = document.getElementById(`modal-${name}`);
             if (el) el.classList.add('open');
@@ -855,6 +913,8 @@
             const screen = document.getElementById('app-screen');
             if (!screen) return;
 
+            syncTasksToCalendar();
+
             const isDark = Boolean(appState.settings.darkMode);
             screen.classList.toggle('dark-mode', isDark);
             screen.style.setProperty('--accent-color', appState.settings.accent || '#007AFF');
@@ -925,22 +985,26 @@
                             <button onclick="saveNewTask()" class="text-xs font-extrabold cursor-pointer" style="color: var(--accent-color)">Añadir</button>
                         </div>
                         <input id="task-title" type="text" placeholder="¿Qué necesitas hacer?" class="ui-input mb-2.5">
+                        <div class="mb-2.5">
+                            <label class="text-[10px] font-bold uppercase block mb-1" style="color: var(--text-secondary)">Categoría</label>
+                            <select id="task-cat" class="ui-input">
+                                ${taskCategories.map(c => `<option value="${c.id}">${c.icon} ${c.label}</option>`).join('')}
+                            </select>
+                        </div>
                         <div class="grid grid-cols-2 gap-2 mb-2">
-                            <div>
-                                <label class="text-[10px] font-bold uppercase block mb-1" style="color: var(--text-secondary)">Categoría</label>
-                                <select id="task-cat" class="ui-input">
-                                    <option value="Personal">Personal</option>
-                                    <option value="Trabajo">Trabajo</option>
-                                    <option value="Salud">Salud</option>
-                                    <option value="Hábito">Hábito</option>
-                                </select>
-                            </div>
                             <div>
                                 <label class="text-[10px] font-bold uppercase block mb-1" style="color: var(--text-secondary)">Fecha límite</label>
                                 <input id="task-due" type="date" value="${getTodayKey()}" class="ui-input">
                             </div>
+                            <div>
+                                <label class="text-[10px] font-bold uppercase block mb-1" style="color: var(--text-secondary)">Hora límite</label>
+                                <input id="task-time" type="time" value="20:00" class="ui-input">
+                            </div>
                         </div>
-                        <button type="button" onclick="document.getElementById('task-due').value=''" class="text-[11px] font-bold cursor-pointer" style="color: var(--text-secondary)">Sin fecha límite</button>
+                        <div class="flex items-center justify-between mt-1">
+                            <span class="text-[10.5px] font-semibold" style="color: var(--text-secondary)">📅 Se sincroniza con Agenda</span>
+                            <button type="button" onclick="document.getElementById('task-due').value=''; document.getElementById('task-time').value=''" class="text-[11px] font-bold cursor-pointer" style="color: var(--accent-color)">Sin fecha/hora</button>
+                        </div>
                     </div>
                 </div>
 
@@ -959,7 +1023,7 @@
                             <input id="ev-time" type="time" value="10:00" class="ui-input">
                         </div>
                         <div class="flex gap-1.5">
-                            ${calendarColors.map(c => `<button type="button" onclick="ui.selectedEventColor='${c.id}'" class="flex-1 py-2 rounded-xl text-[10px] font-extrabold text-white cursor-pointer" style="background-color: ${c.hex}">${c.name}</button>`).join('')}
+                            ${calendarColors.map(c => `<button type="button" onclick="ui.selectedEventColor='${c.id}'" class="flex-1 py-2 rounded-xl text-[10px] font-extrabold text-white cursor-pointer" style="background-color: ${c.hex}">${c.name.split(' ')[0]}</button>`).join('')}
                         </div>
                     </div>
                 </div>
@@ -1046,7 +1110,9 @@
             const doneTasks = activeTasks.filter(t => t.done).length;
             const pct = totalTasks === 0 ? 0 : Math.round((doneTasks / totalTasks) * 100);
             const dashOffset = 150.8 - (pct / 100) * 150.8;
-            const todayEvs = appState.events.filter(e => e.date === currentTodayKey);
+            const todayEvs = appState.events
+                .filter(e => e.date === currentTodayKey)
+                .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
             const doneRoutines = appState.routines.filter(r => r.completedThisWeek).length;
             const activeAlert = appState.alerts.find(a => a.active);
             const streak = computeStreakStats();
@@ -1106,7 +1172,7 @@
                     <div class="grid grid-cols-2 gap-2.5 flex-1">
                         <div onclick="switchTab('calendario')" class="p-2.5 rounded-2xl text-center cursor-pointer tap-btn" style="background-color: var(--bg-screen)">
                             <p class="text-base font-extrabold text-purple-500">${todayEvs.length}</p>
-                            <p class="text-[10.5px] font-bold" style="color: var(--text-secondary)">Citas hoy</p>
+                            <p class="text-[10.5px] font-bold" style="color: var(--text-secondary)">Agenda hoy</p>
                         </div>
                         <div onclick="switchTab('fitness')" class="p-2.5 rounded-2xl text-center cursor-pointer tap-btn" style="background-color: var(--bg-screen)">
                             <p class="text-base font-extrabold text-emerald-500">${doneRoutines}/${appState.routines.length}</p>
@@ -1124,7 +1190,10 @@
                     <div class="space-y-2">
                         ${todayEvs.length === 0 ? `<p class="text-xs" style="color: var(--text-secondary)">Sin eventos hoy.</p>` : todayEvs.map(ev => {
                             const col = calendarColors.find(c => c.id === ev.color) || calendarColors[0];
-                            return `<div class="flex items-center justify-between text-xs py-2 px-3 rounded-xl" style="background-color: var(--bg-screen)"><span class="font-bold truncate">${ev.title}</span><span class="font-extrabold ml-2" style="color: ${col.hex}">${ev.time}</span></div>`;
+                            return `<div onclick="${ev.linkedTaskId ? `toggleTaskItem(${ev.linkedTaskId})` : `switchTab('calendario')`}" class="flex items-center justify-between text-xs py-2 px-3 rounded-xl cursor-pointer" style="background-color: ${ev.overdue ? 'rgba(239, 68, 68, 0.12)' : 'var(--bg-screen)'}">
+                                <span class="font-bold truncate ${ev.done ? 'line-through opacity-50' : ev.overdue ? 'text-red-500' : ''}">${ev.title}</span>
+                                <span class="font-extrabold ml-2 flex-shrink-0" style="color: ${ev.overdue ? '#EF4444' : col.hex}">${ev.time}</span>
+                            </div>`;
                         }).join('')}
                     </div>
                 </div>
@@ -1138,12 +1207,13 @@
                     <div class="space-y-2">
                         ${activeTasks.slice(0, 3).map(t => {
                             const overdue = isTaskOverdue(t);
+                            const catMeta = getCategoryMeta(t.category);
                             return `<div onclick="toggleTaskItem(${t.id})" class="flex items-center justify-between gap-2 text-xs py-2 px-3 rounded-xl cursor-pointer" style="background-color: ${overdue ? 'rgba(239, 68, 68, 0.12)' : 'var(--bg-screen)'}; ${overdue ? 'border: 1px solid rgba(239, 68, 68, 0.45)' : ''}">
                                 <div class="flex items-center gap-2.5 min-w-0 flex-1">
                                     <span class="w-4 h-4 rounded-full flex items-center justify-center text-[10px] text-white font-black flex-shrink-0" style="background-color: ${t.done ? 'var(--accent-color)' : 'transparent'}; border: 1.5px solid ${overdue ? '#EF4444' : 'var(--accent-color)'}">${t.done ? '✓' : ''}</span>
-                                    <span class="font-semibold truncate ${t.done ? 'line-through opacity-50' : overdue ? 'text-red-500 font-bold' : ''}">${t.title}</span>
+                                    <span class="font-semibold truncate ${t.done ? 'line-through opacity-50' : overdue ? 'text-red-500 font-bold' : ''}">${catMeta.icon} ${t.title}</span>
                                 </div>
-                                ${overdue ? `<span class="text-[10px] font-extrabold text-red-500 flex-shrink-0">Vencida</span>` : t.dueDate ? `<span class="text-[10px] font-bold flex-shrink-0" style="color: var(--text-secondary)">${formatShortDate(t.dueDate)}</span>` : ''}
+                                ${overdue ? `<span class="text-[10px] font-extrabold text-red-500 flex-shrink-0">Vencida</span>` : t.dueDate ? `<span class="text-[10px] font-bold flex-shrink-0" style="color: var(--text-secondary)">${formatTaskDeadline(t)}</span>` : ''}
                             </div>`;
                         }).join('')}
                     </div>
@@ -1159,7 +1229,7 @@
         }
 
         /* =========================================================
-           2. SECCIÓN TAREAS + FECHAS LÍMITE + VENCIDAS + ARCHIVO
+           2. SECCIÓN TAREAS + FECHA/HORA LÍMITE + VENCIDAS + ARCHIVO
            ========================================================= */
         function renderTasksSection() {
             const activeTasks = appState.tasks.filter(t => !isTaskArchived(t));
@@ -1238,6 +1308,7 @@
                 <div class="space-y-2.5">
                     ${filtered.length === 0 ? `<div class="app-card p-4 text-center text-xs" style="color: var(--text-secondary)">No hay tareas en esta vista.</div>` : filtered.map(t => {
                         const overdue = isTaskOverdue(t);
+                        const catMeta = getCategoryMeta(t.category);
                         return `
                         <div class="app-card p-3 flex items-center justify-between gap-2.5 shadow-sm" style="${overdue ? 'background-color: rgba(239, 68, 68, 0.13); border: 1.5px solid #EF4444;' : ''}">
                             <div onclick="toggleTaskItem(${t.id})" class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
@@ -1247,8 +1318,8 @@
                                 <div class="min-w-0 flex-1">
                                     <p class="text-sm font-bold truncate ${t.done ? 'line-through opacity-50' : overdue ? 'text-red-500 font-extrabold' : ''}">${t.title}</p>
                                     <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
-                                        <span class="text-[10.5px] font-semibold" style="color: ${overdue ? '#EF4444' : 'var(--text-secondary)'}">${t.category || 'Personal'}</span>
-                                        ${t.dueDate ? `<span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md" style="background-color: ${overdue ? 'rgba(239, 68, 68, 0.2)' : 'var(--bg-screen)'}; color: ${overdue ? '#EF4444' : 'var(--text-secondary)'}">${overdue ? `⚠️ Vencida (${formatShortDate(t.dueDate)}) · Sin hacer` : `📅 ${formatShortDate(t.dueDate)}`}</span>` : ''}
+                                        <span class="text-[10.5px] font-semibold" style="color: ${overdue ? '#EF4444' : 'var(--text-secondary)'}">${catMeta.icon} ${t.category || 'Personal'}</span>
+                                        ${t.dueDate ? `<span class="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md" style="background-color: ${overdue ? 'rgba(239, 68, 68, 0.2)' : 'var(--bg-screen)'}; color: ${overdue ? '#EF4444' : 'var(--text-secondary)'}">${overdue ? `⚠️ Vencida (${formatTaskDeadline(t)}) · Sin hacer` : `⏰ ${formatTaskDeadline(t)}`}</span>` : ''}
                                     </div>
                                 </div>
                             </div>
@@ -1275,18 +1346,20 @@
                         </div>
                         ${ui.showCompletedArchive ? `
                             <div class="space-y-2 opacity-80">
-                                ${archivedTasks.map(t => `
+                                ${archivedTasks.map(t => {
+                                    const catMeta = getCategoryMeta(t.category);
+                                    return `
                                     <div class="app-card p-2.5 flex items-center justify-between gap-2">
                                         <div onclick="toggleTaskItem(${t.id})" class="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer">
                                             <div class="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 bg-emerald-500 text-white text-[10px] font-black">✓</div>
                                             <div class="min-w-0 flex-1">
                                                 <p class="text-xs font-semibold line-through truncate opacity-75">${t.title}</p>
-                                                <span class="text-[9.5px] font-semibold" style="color: var(--text-secondary)">Completada ${formatShortDate(t.completedDate)} · ${t.category || 'Personal'}</span>
+                                                <span class="text-[9.5px] font-semibold" style="color: var(--text-secondary)">Completada ${formatShortDate(t.completedDate)} · ${catMeta.icon} ${t.category || 'Personal'}</span>
                                             </div>
                                         </div>
                                         <button onclick="deleteTaskItem(${t.id})" class="text-xs opacity-50 px-2 py-1 cursor-pointer">✕</button>
-                                    </div>
-                                `).join('')}
+                                    </div>`;
+                                }).join('')}
                             </div>
                         ` : ''}
                     </div>
@@ -1417,25 +1490,30 @@
             const inp = document.getElementById('task-title');
             const cat = document.getElementById('task-cat');
             const due = document.getElementById('task-due');
+            const timeInp = document.getElementById('task-time');
             const title = inp ? inp.value.trim() : '';
             if (!title) return;
+            const dueDate = due && due.value ? due.value : null;
+            const dueTime = dueDate && timeInp && timeInp.value ? timeInp.value : null;
             appState.tasks.unshift({
                 id: Date.now(),
                 title,
                 category: cat ? cat.value : 'Personal',
-                dueDate: due && due.value ? due.value : null,
+                dueDate,
+                dueTime,
                 done: false,
                 completedDate: null
             });
             inp.value = '';
             if (due) due.value = getTodayKey();
+            if (timeInp) timeInp.value = '20:00';
             saveState();
             closeModal('task');
             renderApp();
         }
 
         /* =========================================================
-           3. SECCIÓN AGENDA / CALENDARIO
+           3. SECCIÓN AGENDA / CALENDARIO (VINCULADA CON TAREAS)
            ========================================================= */
         function renderCalendarSection() {
             const currentTodayKey = getTodayKey();
@@ -1449,11 +1527,13 @@
                 const sel = ui.calSelectedDate === ds;
                 cells += `<button onclick="ui.calSelectedDate='${ds}'; renderApp()" class="h-10 rounded-xl flex flex-col items-center justify-center cursor-pointer" style="background-color: ${sel ? 'var(--accent-color)' : ds === currentTodayKey ? 'var(--accent-soft)' : 'transparent'}; color: ${sel ? '#FFF' : 'var(--text-primary)'}">
                     <span class="text-xs font-extrabold leading-none">${d}</span>
-                    <div class="flex gap-0.5 mt-1 h-1">${evs.slice(0, 3).map(e => `<span class="w-1 h-1 rounded-full" style="background-color: ${sel ? '#FFF' : (calendarColors.find(c => c.id === e.color)?.hex || '#007AFF')}"></span>`).join('')}</div>
+                    <div class="flex gap-0.5 mt-1 h-1">${evs.slice(0, 3).map(e => `<span class="w-1 h-1 rounded-full" style="background-color: ${sel ? '#FFF' : e.overdue ? '#EF4444' : (calendarColors.find(c => c.id === e.color)?.hex || '#007AFF')}"></span>`).join('')}</div>
                 </button>`;
             }
 
-            const dayEvs = appState.events.filter(e => e.date === ui.calSelectedDate);
+            const dayEvs = appState.events
+                .filter(e => e.date === ui.calSelectedDate)
+                .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
 
             return `
                 <div class="flex items-center justify-between mb-3.5">
@@ -1475,13 +1555,17 @@
                     <div class="grid grid-cols-7 gap-1">${cells}</div>
                 </div>
 
-                <span class="text-xs font-extrabold block mb-2.5">Eventos (${ui.calSelectedDate})</span>
+                <span class="text-xs font-extrabold block mb-2.5">Eventos y tareas (${formatShortDate(ui.calSelectedDate)})</span>
                 <div class="space-y-2.5">
-                    ${dayEvs.length === 0 ? `<div class="app-card p-4 text-center text-xs" style="color: var(--text-secondary)">Sin eventos este día.</div>` : dayEvs.map(ev => {
+                    ${dayEvs.length === 0 ? `<div class="app-card p-4 text-center text-xs" style="color: var(--text-secondary)">Sin eventos ni tareas este día.</div>` : dayEvs.map(ev => {
                         const col = calendarColors.find(c => c.id === ev.color) || calendarColors[0];
-                        return `<div class="app-card p-3 flex items-center justify-between shadow-sm" style="border-left: 4px solid ${col.hex}">
-                            <div><span class="text-[10px] font-extrabold" style="color: ${col.hex}">${col.name} · ${ev.time}</span><p class="text-sm font-extrabold">${ev.title}</p></div>
-                            <button onclick="deleteEventItem(${ev.id})" class="text-xs opacity-50 px-2 py-1 cursor-pointer">✕</button>
+                        const isLinkedTask = Boolean(ev.linkedTaskId);
+                        return `<div class="app-card p-3 flex items-center justify-between shadow-sm" style="border-left: 4px solid ${ev.overdue ? '#EF4444' : col.hex}; ${ev.overdue ? 'background-color: rgba(239, 68, 68, 0.11);' : ''}">
+                            <div onclick="${isLinkedTask ? `toggleTaskItem(${ev.linkedTaskId})` : ''}" class="min-w-0 flex-1 ${isLinkedTask ? 'cursor-pointer' : ''}">
+                                <span class="text-[10px] font-extrabold" style="color: ${ev.overdue ? '#EF4444' : col.hex}">${isLinkedTask ? 'Tarea programada' : col.name.split(' ')[0]} · ${ev.time}${ev.overdue ? ' · ⚠️ Vencida' : ''}</span>
+                                <p class="text-sm font-extrabold truncate ${ev.done ? 'line-through opacity-50' : ev.overdue ? 'text-red-500' : ''}">${ev.title}</p>
+                            </div>
+                            <button onclick="${isLinkedTask ? `deleteTaskItem(${ev.linkedTaskId})` : `deleteEventItem(${ev.id})`}" class="text-xs opacity-50 px-2 py-1 cursor-pointer">✕</button>
                         </div>`;
                     }).join('')}
                 </div>
